@@ -1,0 +1,2107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>野兽派肖像 — 面部捕捉 × 马蒂斯线条</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --paper: #f5f0e8;
+      --muted: #8a8279;
+      --accent: #c44d34;
+      --rule: #d9d3c9;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; }
+    body {
+      font-family: 'Noto Serif SC', serif;
+      background: var(--paper);
+      color: var(--ink);
+      line-height: 1.7;
+      min-height: 100vh;
+    }
+
+    header {
+      text-align: center;
+      padding: 2.5rem 1.5rem 1.5rem;
+    }
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.4rem;
+    }
+    header p {
+      color: var(--muted);
+      font-size: 0.95rem;
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1.5rem 2rem;
+    }
+
+    .panel {
+      background: #fff;
+      border: 1px solid var(--rule);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+    }
+    .panel-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.9rem 1.2rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid var(--rule);
+      background: #faf8f4;
+    }
+    .panel-label .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .panel-label .dot.active {
+      background: #2a9d5c;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .canvas-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4/3;
+      background: #faf8f4;
+    }
+    .canvas-wrap video, .canvas-wrap canvas, .canvas-wrap img {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .canvas-wrap video {
+      transform: scaleX(-1);
+    }
+    .canvas-wrap canvas {
+      z-index: 2;
+    }
+    .canvas-wrap .placeholder {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: center;
+      padding: 2rem;
+    }
+
+    .controls {
+      display: flex;
+      gap: 0.6rem;
+      padding: 1rem 1.2rem;
+      border-top: 1px solid var(--rule);
+      background: #faf8f4;
+      flex-wrap: wrap;
+    }
+    .btn {
+      padding: 0.55rem 1.2rem;
+      border-radius: 8px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: #fff;
+      font-family: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.04em;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn.secondary {
+      background: transparent;
+      color: var(--ink);
+    }
+    .btn.secondary:hover { background: var(--ink); color: #fff; }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    input[type="file"] { display: none; }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 860px) {
+      .workspace { grid-template-columns: 1fr; }
+      header h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>野兽派肖像</h1>
+  <p>打开摄像头或上传照片，捕捉面部轮廓，实时转换成亨利·马蒂斯风格的野兽派线条画</p>
+</header>
+
+<div class="workspace">
+  <div class="panel" id="cameraPanel">
+    <div class="panel-label">
+      <span class="dot" id="camDot"></span>
+      摄像头画面 / 上传图片
+    </div>
+    <div class="canvas-wrap">
+      <video id="inputVideo" class="hidden" playsinline></video>
+      <img id="uploadPreview" class="hidden" alt="上传预览">
+      <div class="placeholder" id="camPlaceholder">
+        点击「开启摄像头」或「上传图片」开始
+      </div>
+    </div>
+    <div class="controls">
+      <button class="btn" id="btnStart">开启摄像头</button>
+      <button class="btn secondary" id="btnUpload">上传图片</button>
+      <input type="file" id="fileInput" accept="image/*">
+      <button class="btn secondary" id="btnStop" disabled>停止</button>
+    </div>
+  </div>
+
+  <div class="panel" id="artPanel">
+    <div class="panel-label">
+      <span class="dot active"></span>
+      马蒂斯线条画
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="outputCanvas"></canvas>
+      <div class="placeholder" id="artPlaceholder">
+        等待面部数据...
+      </div>
+    </div>
+    <div class="controls">
+      <button class="btn secondary" id="btnSnap" disabled>拍照保存</button>
+      <button class="btn secondary" id="btnClear">清空画布</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// DOM elements
+const video = document.getElementById('inputVideo');
+const uploadPreview = document.getElementById('uploadPreview');
+const canvas = document.getElementById('outputCanvas');
+const ctx = canvas.getContext('2d');
+const camPlaceholder = document.getElementById('camPlaceholder');
+const artPlaceholder = document.getElementById('artPlaceholder');
+const btnStart = document.getElementById('btnStart');
+const btnStop = document.getElementById('btnStop');
+const btnSnap = document.getElementById('btnSnap');
+const btnClear = document.getElementById('btnClear');
+const btnUpload = document.getElementById('btnUpload');
+const fileInput = document.getElementById('fileInput');
+const camDot = document.getElementById('camDot');
+
+let isRunning = false;
+let isUploadMode = false;
+let lastLandmarks = null;
+let lastHairEdge = null;
+let hairEdgeFrameCount = 0;
+const state = { seed: 0 };
+
+// ===== 5 Drawing Styles =====
+// Style is chosen once on page load, locked for the session
+const DRAWING_STYLES = [
+  {
+    name: 'matisse',
+    label: '马蒂斯粗线',
+    faceWidthMul: 1.3,
+    featureDetail: 'minimal',
+    eyeMode: 'polygon',      // straight line segments, geometric polygon
+    noseMode: 'curve',       // smooth flowing curve
+    mouthMode: 'single-line', // one horizontal line
+    browMode: 'minimal',
+    hairDetail: 'top-only',
+    neck: false,
+    exaggerate: 1.5,
+    lineVary: true,
+    rough: 0.50,
+    strokeAlpha: 1.0,
+  },
+  {
+    name: 'expressive',
+    label: '表现派细节',
+    faceWidthMul: 0.9,
+    featureDetail: 'full',
+    eyeMode: 'blob',         // filled realistic shape
+    noseMode: 'realistic',   // bridge + bulb + nostrils
+    mouthMode: 'realistic',  // full upper+lower with corner dots
+    browMode: 'full',
+    hairDetail: 'full',
+    neck: true,
+    exaggerate: 1.2,
+    lineVary: true,
+    rough: 0.35,
+    strokeAlpha: 1.0,
+  },
+  {
+    name: 'picasso',
+    label: '毕加索解构',
+    faceWidthMul: 1.0,
+    featureDetail: 'fragment',
+    eyeMode: 'irregular',    // deformed blob, strong distortion
+    noseMode: 'zigzag',    // sharp angular lines
+    mouthMode: 'zigzag',   // angular upper+lower
+    browMode: 'minimal',
+    hairDetail: 'top-only',
+    neck: false,
+    exaggerate: 1.8,
+    lineVary: true,
+    rough: 0.65,
+    strokeAlpha: 0.85,
+  },
+  {
+    name: 'calligraphy',
+    label: '流动书法',
+    faceWidthMul: 1.1,
+    featureDetail: 'flowing',
+    eyeMode: 'outline',      // outline contour only
+    noseMode: 'minimal',     // 2-3 point minimal bridge
+    mouthMode: 'arc',        // single sweeping arc
+    browMode: 'full',
+    hairDetail: 'full',
+    neck: true,
+    exaggerate: 1.3,
+    lineVary: true,
+    rough: 0.45,
+    strokeAlpha: 0.9,
+  },
+  {
+    name: 'minimal',
+    label: '极简符号',
+    faceWidthMul: 0.7,
+    featureDetail: 'symbol',
+    eyeMode: 'dot',          // solid dot
+    noseMode: 'brackets',    // () shape
+    mouthMode: 'symbol',     // short dash
+    browMode: 'minimal',
+    hairDetail: 'none',
+    neck: false,
+    exaggerate: 1.0,
+    lineVary: false,
+    rough: 0.20,
+    strokeAlpha: 1.0,
+  }
+];
+
+// Pick a style on load — random but deterministic within session
+let currentStyle = DRAWING_STYLES[Math.floor(Math.random() * DRAWING_STYLES.length)];
+console.log('[Style]', currentStyle.label);
+
+// Visual Memory: collect multi-frame data to find stable features
+const visualMemory = {
+  enabled: false,
+  frames: [],
+  maxFrames: 45, // ~1.5 seconds at 30fps
+  stableFeatures: null,
+  frameCount: 0
+};
+
+let smoothHairData = null;
+const HAIR_SMOOTH = 0.35; // interpolation factor (0=keep old, 1=use new)
+
+// Set canvas size
+function resizeCanvas() {
+  const wrap = canvas.parentElement;
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+function lm(landmarks, idx) {
+  return landmarks[idx];
+}
+
+// ============================================================
+// Codex-style utility functions
+// ============================================================
+function rand(seed) {
+  const x = Math.sin(seed * 999.13) * 43758.5453123;
+  return x - Math.floor(x);
+}
+
+function simplify(points, keep) {
+  if (points.length <= keep) return points;
+  const out = [];
+  const step = (points.length - 1) / (keep - 1);
+  for (let i = 0; i < keep; i += 1) out.push(points[Math.round(i * step)]);
+  return out;
+}
+
+function stylize(points, amount, seed, closed = false) {
+  const out = points.map((p, i) => {
+    const wobble = 1 + amount * 6;
+    const n1 = rand(seed + i * 2) - 0.5;
+    const n2 = rand(seed + i * 2 + 1) - 0.5;
+    return { x: p.x + n1 * wobble, y: p.y + n2 * wobble };
+  });
+  if (closed) out.push(out[0]);
+  return out;
+}
+
+function drawBrushPath(points, opts = {}) {
+  if (points.length < 2) return;
+  const baseWidth = opts.width ?? 26;
+  const rough = opts.rough ?? 0.5;
+  const closed = opts.closed ?? false;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+  const varyWidth = opts.varyWidth !== false; // default true
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+
+  // Pre-compute segment curvature and widths for organic variation
+  const segWidths = [];
+  if (varyWidth && points.length >= 3) {
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const next = points[i + 1];
+      let curvature = 0;
+      if (next) {
+        const a1 = Math.atan2(curr.y - prev.y, curr.x - prev.x);
+        const a2 = Math.atan2(next.y - curr.y, next.x - curr.x);
+        curvature = Math.abs(Math.atan2(Math.sin(a2 - a1), Math.cos(a2 - a1)));
+      }
+      // More curvature = thicker; straighter = thinner
+      const curveFactor = 0.5 + curvature * 2.5;
+      // Random organic variation
+      const organic = 0.75 + rand(seed + i * 31) * 0.5;
+      // Brush stroke: start thick, end thin
+      const strokePos = i / (points.length - 1);
+      const strokeFactor = 1.0 + Math.sin(strokePos * Math.PI) * 0.4; // thick in middle, thinner at ends
+      segWidths.push(Math.max(1.5, baseWidth * curveFactor * organic * strokeFactor));
+    }
+  }
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    ctx.beginPath();
+    const passOffset = (pass - 1) * rough * 2;
+
+    let px = points[0].x, py = points[0].y;
+    const jx0 = (rand(seed + pass * 91) - 0.5) * rough * 3 + passOffset;
+    const jy0 = (rand(seed + pass * 101) - 0.5) * rough * 3 - passOffset;
+    ctx.moveTo(px + jx0, py + jy0);
+
+    for (let i = 1; i < points.length; i++) {
+      const curr = points[i];
+      const prev = points[i - 1];
+      const jx = (rand(seed + pass * 91 + i * 7) - 0.5) * rough * 3 + passOffset;
+      const jy = (rand(seed + pass * 101 + i * 9) - 0.5) * rough * 3 - passOffset;
+
+      // Random curvature mode per segment (per person = per seed)
+      const curveMode = Math.floor(rand(seed + i * 13 + pass * 37) * 3);
+
+      if (curveMode === 0) {
+        // Tight curve: control point near midpoint with random offset
+        const cx = (prev.x + curr.x) / 2 + (rand(seed + i * 17) - 0.5) * rough * 20;
+        const cy = (prev.y + curr.y) / 2 + (rand(seed + i * 19) - 0.5) * rough * 20;
+        ctx.quadraticCurveTo(cx + jx, cy + jy,
+          (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      } else if (curveMode === 1) {
+        // Loose sweep: control point at prev with offset
+        ctx.quadraticCurveTo(prev.x + jx + (rand(seed + i * 23) - 0.5) * rough * 12,
+                             prev.y + jy + (rand(seed + i * 29) - 0.5) * rough * 12,
+                             (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      } else {
+        // Deep curve: control point far from segment
+        const cx = (prev.x + curr.x) / 2 + (curr.y - prev.y) * 0.4 * (rand(seed + i * 31) > 0.5 ? 1 : -1);
+        const cy = (prev.y + curr.y) / 2 - (curr.x - prev.x) * 0.4 * (rand(seed + i * 31) > 0.5 ? 1 : -1);
+        ctx.quadraticCurveTo(cx + jx, cy + jy,
+          (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      }
+    }
+    if (closed) ctx.closePath();
+    ctx.lineWidth = Math.max(2, baseWidth * (0.72 + pass * 0.16 + (rand(seed + pass) - 0.5) * 0.18));
+    ctx.stroke();
+  }
+
+  // Second pass: organic width variation with separate per-segment widths
+  if (varyWidth && segWidths.length > 0) {
+    ctx.beginPath();
+    let px = points[0].x, py = points[0].y;
+    const jx0 = (rand(seed + 300) - 0.5) * rough * 2;
+    const jy0 = (rand(seed + 301) - 0.5) * rough * 2;
+    ctx.moveTo(px + jx0, py + jy0);
+
+    for (let i = 1; i < points.length; i++) {
+      const curr = points[i];
+      const prev = points[i - 1];
+      const jx = (rand(seed + 300 + i * 7) - 0.5) * rough * 2;
+      const jy = (rand(seed + 301 + i * 9) - 0.5) * rough * 2;
+      const curveMode = Math.floor(rand(seed + i * 13 + 300) * 3);
+      if (curveMode === 0) {
+        ctx.quadraticCurveTo((prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy,
+          (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      } else if (curveMode === 1) {
+        ctx.quadraticCurveTo(prev.x + jx, prev.y + jy,
+          (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      } else {
+        ctx.quadraticCurveTo(curr.x + jx, curr.y + jy,
+          (prev.x + curr.x) / 2 + jx, (prev.y + curr.y) / 2 + jy);
+      }
+    }
+    if (closed) ctx.closePath();
+    // Average width of segments for the pass
+    const avgW = segWidths.reduce((a, b) => a + b, 0) / segWidths.length;
+    ctx.lineWidth = avgW * 0.35;
+    ctx.globalAlpha = 0.4;
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+  }
+
+  ctx.restore();
+}
+
+// drawPolygon — straight line segments, geometric feel (Matisse angular)
+function drawPolygon(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+  const closed = opts.closed ?? false;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "miter";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+  ctx.lineWidth = width;
+
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const jx = (rand(seed + i * 7) - 0.5) * 2.5;
+    const jy = (rand(seed + i * 9) - 0.5) * 2.5;
+    if (i === 0) ctx.moveTo(p.x + jx, p.y + jy);
+    else ctx.lineTo(p.x + jx, p.y + jy);
+  });
+  if (closed) ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// drawZigzag — sharp angular lines, no curves (Picasso fragment)
+function drawZigzag(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "square";
+  ctx.lineJoin = "miter";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+
+  // Draw in 2-3 sharp strokes instead of one continuous line
+  const segments = Math.min(3, Math.ceil(points.length / 3));
+  for (let s = 0; s < segments; s++) {
+    ctx.beginPath();
+    const start = Math.floor(s * points.length / segments);
+    const end = Math.floor((s + 1) * points.length / segments);
+    const segWidth = width * (0.8 + rand(seed + s * 11) * 0.6);
+    ctx.lineWidth = segWidth;
+
+    for (let i = start; i < end && i < points.length; i++) {
+      const jx = (rand(seed + i * 13) - 0.5) * 4;
+      const jy = (rand(seed + i * 17) - 0.5) * 4;
+      if (i === start) ctx.moveTo(points[i].x + jx, points[i].y + jy);
+      else ctx.lineTo(points[i].x + jx, points[i].y + jy);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// drawArcs — minimal arcs, 2-3 sweeping curves
+function drawArcs(points, opts = {}) {
+  if (points.length < 3) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+  const closed = opts.closed ?? false;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+  ctx.lineWidth = width;
+
+  // Divide into 2-3 arc segments
+  const segCount = Math.min(3, Math.floor(points.length / 3));
+  for (let s = 0; s < segCount; s++) {
+    const start = Math.floor(s * points.length / segCount);
+    const mid = Math.floor((s + 0.5) * points.length / segCount);
+    const end = Math.min(points.length - 1, Math.floor((s + 1) * points.length / segCount));
+    if (end - start < 2) continue;
+
+    ctx.beginPath();
+    const jx0 = (rand(seed + s * 31) - 0.5) * 3;
+    const jy0 = (rand(seed + s * 37) - 0.5) * 3;
+    ctx.moveTo(points[start].x + jx0, points[start].y + jy0);
+
+    // One big arc through the segment
+    const cx = points[mid].x + (rand(seed + s * 41) - 0.5) * 15;
+    const cy = points[mid].y + (rand(seed + s * 43) - 0.5) * 15;
+    ctx.quadraticCurveTo(cx, cy, points[end].x + jx0, points[end].y + jy0);
+    ctx.lineWidth = width * (0.8 + rand(seed + s * 47) * 0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// drawDots — place dots at key positions (minimal symbolic)
+function drawDots(points, opts = {}) {
+  if (points.length < 1) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.fillStyle = `rgba(17, 15, 14, ${alpha})`;
+
+  // Place 1-3 dots at meaningful positions
+  const indices = [0, Math.floor(points.length / 2), points.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+  for (const idx of indices) {
+    const r = width * (0.4 + rand(seed + idx * 7) * 0.4);
+    ctx.beginPath();
+    ctx.arc(points[idx].x, points[idx].y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// drawBrackets — () or [] shape around a region (minimal nose/mouth)
+function drawBrackets(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+  ctx.lineWidth = width;
+
+  // Find leftmost and rightmost points
+  const left = points.reduce((min, p) => p.x < min.x ? p : min, points[0]);
+  const right = points.reduce((max, p) => p.x > max.x ? p : max, points[0]);
+  const top = points.reduce((min, p) => p.y < min.y ? p : min, points[0]);
+  const bottom = points.reduce((max, p) => p.y > max.y ? p : max, points[0]);
+  const cx = (left.x + right.x) / 2;
+  const cy = (top.y + bottom.y) / 2;
+  const h = bottom.y - top.y;
+
+  // Left bracket
+  ctx.beginPath();
+  ctx.moveTo(cx - 5, top.y - h * 0.1);
+  ctx.quadraticCurveTo(left.x - h * 0.2, cy, cx - 5, bottom.y + h * 0.1);
+  ctx.stroke();
+
+  // Right bracket
+  ctx.beginPath();
+  ctx.moveTo(cx + 5, top.y - h * 0.1);
+  ctx.quadraticCurveTo(right.x + h * 0.2, cy, cx + 5, bottom.y + h * 0.1);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// drawRealisticNose — bridge + bulb + nostrils (expressive detail)
+function drawRealisticNose(landmarks, bounds, opts = {}) {
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+
+  // Bridge — 3 segments with different widths
+  const bridgePts = [168, 6, 197, 195, 5, 4].map(i => point(landmarks, i, bounds, true));
+  ctx.beginPath();
+  ctx.lineWidth = width * 0.8;
+  bridgePts.forEach((p, i) => {
+    const jx = (rand(seed + i * 3) - 0.5) * 2;
+    const jy = (rand(seed + i * 5) - 0.5) * 2;
+    if (i === 0) ctx.moveTo(p.x + jx, p.y + jy);
+    else ctx.lineTo(p.x + jx, p.y + jy);
+  });
+  ctx.stroke();
+
+  // Tip bulb
+  const tip = point(landmarks, 4, bounds, true);
+  const leftNostril = point(landmarks, 98, bounds, true);
+  const rightNostril = point(landmarks, 327, bounds, true);
+  const noseBase = point(landmarks, 2, bounds, true);
+
+  // Nose bottom curve
+  ctx.beginPath();
+  ctx.lineWidth = width * 0.6;
+  ctx.moveTo(leftNostril.x, leftNostril.y);
+  ctx.quadraticCurveTo(noseBase.x, noseBase.y + 3, rightNostril.x, rightNostril.y);
+  ctx.stroke();
+
+  // Nostrils as small arcs
+  ctx.fillStyle = `rgba(17, 15, 14, ${alpha * 0.7})`;
+  [leftNostril, rightNostril].forEach((n, i) => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y + 2, width * 0.25, 0, Math.PI, false);
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+// drawMouthArc — single sweeping arc for upper lip only (calligraphic)
+function drawMouthArc(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+
+  // Find 3 key points: left corner, center peak, right corner
+  const left = points[0];
+  const right = points[points.length - 1];
+  const center = points[Math.floor(points.length / 2)];
+
+  ctx.beginPath();
+  ctx.lineWidth = width * 1.2;
+  const jx = (rand(seed) - 0.5) * 3;
+  const jy = (rand(seed + 1) - 0.5) * 3;
+  ctx.moveTo(left.x + jx, left.y + jy);
+  ctx.quadraticCurveTo(center.x + jx, center.y + jy - 5, right.x + jx, right.y + jy);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// drawMouthSymbol — minimal line or small mark (minimal)
+function drawMouthSymbol(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+  ctx.lineWidth = width * 0.8;
+
+  const center = points[Math.floor(points.length / 2)];
+  const left = points[0];
+  const right = points[points.length - 1];
+  const w = Math.abs(right.x - left.x);
+
+  // Short horizontal dash with slight curve
+  ctx.beginPath();
+  ctx.moveTo(center.x - w * 0.3, center.y);
+  ctx.quadraticCurveTo(center.x, center.y + 3, center.x + w * 0.3, center.y);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// drawMouthZigzag — angular broken lines (Picasso fragment)
+function drawMouthZigzag(upper, lower, opts = {}) {
+  if (upper.length < 2 || lower.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "square";
+  ctx.lineJoin = "miter";
+  ctx.strokeStyle = `rgba(17, 15, 14, 1)`;
+
+  // Upper lip as angular line
+  ctx.beginPath();
+  ctx.lineWidth = width * 0.9;
+  upper.forEach((p, i) => {
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+  ctx.stroke();
+
+  // Lower lip as separate angular line
+  ctx.beginPath();
+  ctx.lineWidth = width * 0.8;
+  lower.forEach((p, i) => {
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// drawMouthRealistic — full upper+lower with corners and shading hint (expressive)
+function drawMouthRealistic(upper, lower, opts = {}) {
+  if (upper.length < 2 || lower.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, 1)`;
+
+  // Upper lip — thick center, thin corners
+  ctx.beginPath();
+  for (let i = 0; i < upper.length - 1; i++) {
+    const t = i / (upper.length - 1);
+    const lineW = width * (0.7 + Math.sin(t * Math.PI) * 0.5); // thick in middle
+    ctx.lineWidth = lineW;
+    ctx.beginPath();
+    ctx.moveTo(upper[i].x, upper[i].y);
+    ctx.lineTo(upper[i + 1].x, upper[i + 1].y);
+    ctx.stroke();
+  }
+
+  // Lower lip
+  ctx.beginPath();
+  for (let i = 0; i < lower.length - 1; i++) {
+    const t = i / (lower.length - 1);
+    const lineW = width * (0.6 + Math.sin(t * Math.PI) * 0.4);
+    ctx.lineWidth = lineW;
+    ctx.beginPath();
+    ctx.moveTo(lower[i].x, lower[i].y);
+    ctx.lineTo(lower[i + 1].x, lower[i + 1].y);
+    ctx.stroke();
+  }
+
+  // Small corner marks
+  ctx.fillStyle = '#1a1a1a';
+  [upper[0], upper[upper.length - 1]].forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, width * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+// drawIrregularBlob — deformed eye shape (Picasso)
+function drawIrregularBlob(points, opts = {}) {
+  if (points.length < 3) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+
+  ctx.save();
+  ctx.fillStyle = "#151313";
+  ctx.beginPath();
+
+  // Strongly deform the shape
+  const center = {
+    x: points.reduce((s, p) => s + p.x, 0) / points.length,
+    y: points.reduce((s, p) => s + p.y, 0) / points.length
+  };
+
+  points.forEach((p, i) => {
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    const push = 1.0 + (rand(seed + i) - 0.5) * 0.6; // strong deformation
+    const angle = (rand(seed + i + 100) - 0.5) * 0.5; // angular twist
+    const q = {
+      x: center.x + dx * push * Math.cos(angle) - dy * push * Math.sin(angle),
+      y: center.y + dy * push * Math.cos(angle) + dx * push * Math.sin(angle)
+    };
+    if (i === 0) ctx.moveTo(q.x, q.y);
+    else ctx.quadraticCurveTo(p.x, p.y, q.x, q.y);
+  });
+
+  ctx.closePath();
+  ctx.filter = `blur(${Math.max(0, width * 0.02)}px)`;
+  ctx.fill();
+  ctx.restore();
+}
+
+// Clean contour line — single-pass smooth stroke
+// Used for hair outline: NOT filled, just the edge line
+function drawContourLine(points, opts = {}) {
+  if (points.length < 2) return;
+  const width = opts.width ?? 20;
+  const seed = opts.seed ?? 1;
+  const alpha = opts.alpha ?? 1;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(17, 15, 14, ${alpha})`;
+  ctx.lineWidth = width;
+
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const jx = (rand(seed + i * 7) - 0.5) * 1.5;
+    const jy = (rand(seed + i * 9) - 0.5) * 1.5;
+    if (i === 0) {
+      ctx.moveTo(p.x + jx, p.y + jy);
+    } else {
+      const prev = points[i - 1];
+      const mx = (prev.x + p.x) / 2 + jx;
+      const my = (prev.y + p.y) / 2 + jy;
+      ctx.quadraticCurveTo(prev.x + (rand(seed + (i-1) * 7) - 0.5) * 1.5, 
+                            prev.y + (rand(seed + (i-1) * 9) - 0.5) * 1.5, 
+                            mx, my);
+    }
+  });
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBlob(points, width, seed) {
+  const center = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+  center.x /= points.length;
+  center.y /= points.length;
+
+  ctx.save();
+  ctx.fillStyle = "#151313";
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    const push = 1.12 + (rand(seed + i) - 0.5) * 0.28;
+    const q = { x: center.x + dx * push, y: center.y + dy * push };
+    if (i === 0) ctx.moveTo(q.x, q.y);
+    else ctx.quadraticCurveTo(p.x, p.y, q.x, q.y);
+  });
+  ctx.closePath();
+  ctx.filter = `blur(${Math.max(0, width * 0.015)}px)`;
+  ctx.fill();
+  ctx.restore();
+}
+
+// drawBlobShape — fills the actual contour with blur, preserving real proportions
+// (round eyes stay round, narrow eyes stay narrow, etc.)
+function drawBlobShape(points, width, seed) {
+  ctx.save();
+  ctx.fillStyle = "#151313";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length - 1; i++) {
+    const xc = (points[i].x + points[i + 1].x) / 2;
+    const yc = (points[i].y + points[i + 1].y) / 2;
+    ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+  }
+  ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+  ctx.closePath();
+  ctx.filter = `blur(${Math.max(0, width * 0.015)}px)`;
+  ctx.fill();
+  ctx.restore();
+}
+
+// exaggerateFeature — radially scale points away from a center point
+// Used to exaggerate the most prominent facial feature (Matisse fauvist technique)
+function exaggerateFeature(points, center, scale) {
+  if (scale <= 1.01) return points;
+  return points.map(p => ({
+    x: center.x + (p.x - center.x) * scale,
+    y: center.y + (p.y - center.y) * scale
+  }));
+}
+
+function drawPaper() {
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  for (let i = 0; i < 650; i += 1) {
+    const v = 180 + Math.floor(rand(i + state.seed) * 50);
+    ctx.fillStyle = `rgb(${v},${v - 7},${v - 15})`;
+    ctx.fillRect(rand(i * 3) * canvas.width, rand(i * 5) * canvas.height, 1, 1);
+  }
+  ctx.restore();
+}
+
+// Smooth fill for closed shapes (eyes, lips)
+function drawFillShape(points, fillColor = '#1a1a1a') {
+  if (points.length < 3) return;
+  ctx.save();
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length - 1; i++) {
+    const xc = (points[i].x + points[i + 1].x) / 2;
+    const yc = (points[i].y + points[i + 1].y) / 2;
+    ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+  }
+  ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// MATISSE PORTRAIT — Feature-Driven Approach
+// Instead of parameter templates, analyze MediaPipe landmarks to extract
+// individual facial features, then conditionally draw based on those features.
+// Each person produces a unique portrait driven by their actual face geometry.
+// ============================================================
+
+// analyzeFeatures — Extract individualized facial characteristics from landmarks
+function analyzeFeatures(landmarks, toCanvas, scale) {
+  const P = (idx) => toCanvas(idx);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const midY = (a, b) => (a.y + b.y) / 2;
+
+  // Face measurements
+  const faceTop = P(10);
+  const chin = P(152);
+  const faceH = Math.max(1, dist(faceTop, chin));
+  const leftJaw = P(234);
+  const rightJaw = P(454);
+  const jawW = Math.max(1, dist(leftJaw, rightJaw));
+  const leftCheekbone = P(234);
+  const rightCheekbone = P(454);
+  const cheekboneW = Math.max(1, dist(leftCheekbone, rightCheekbone));
+  const faceCx = (leftJaw.x + rightJaw.x) / 2;
+  const faceCy = (faceTop.y + chin.y) / 2;
+
+  // Face type based on ratios
+  const heightToWidth = faceH / jawW;
+  const jawToCheekbone = jawW / cheekboneW;
+  let faceType = 'oval';
+  if (heightToWidth > 1.55) {
+    faceType = 'long';
+  } else if (heightToWidth < 1.15) {
+    faceType = 'round';
+  } else if (jawToCheekbone > 0.92) {
+    faceType = 'square';
+  } else if (jawToCheekbone < 0.75) {
+    faceType = 'diamond';
+  }
+
+  // Chin shape: curvature at chin — compare chin to jaw line
+  const chinLeft = P(172);
+  const chinRight = P(397);
+  const jawMidX = (chinLeft.x + chinRight.x) / 2;
+  const jawMidY = (chinLeft.y + chinRight.y) / 2;
+  const chinDepth = chin.y - jawMidY; // positive = protruding
+  const chinWidth = Math.abs(chinRight.x - chinLeft.x);
+  let chinShape = 'pointed';
+  if (chinDepth / chinWidth < 0.25) {
+    chinShape = 'flat';
+  } else if (chinDepth / chinWidth > 0.55) {
+    chinShape = 'pointed';
+  } else {
+    chinShape = 'round';
+  }
+
+  // Jaw width
+  const jawWidth = jawW;
+
+  // Forehead height: hairline to brow
+  const leftBrowInner = P(107);
+  const rightBrowInner = P(336);
+  const leftHairline = P(67);
+  const rightHairline = P(297);
+  const topCenter = P(10);
+  const browY = Math.min(leftBrowInner.y, rightBrowInner.y);
+  const hairlineY = (leftHairline.y + rightHairline.y) / 2;
+  const foreheadHeight = Math.max(1, browY - hairlineY);
+
+  // Eye measurements (left eye: inner=133, outer=33, top=159, bottom=145)
+  // (right eye: inner=362, outer=263, top=386, bottom=374)
+  const lEyeInner = P(133), lEyeOuter = P(33), lEyeTop = P(159), lEyeBot = P(145);
+  const rEyeInner = P(362), rEyeOuter = P(263), rEyeTop = P(386), rEyeBot = P(374);
+
+  const lEyeW = Math.max(1, dist(lEyeInner, lEyeOuter));
+  const lEyeH = Math.max(1, dist(lEyeTop, lEyeBot));
+  const rEyeW = Math.max(1, dist(rEyeInner, rEyeOuter));
+  const rEyeH = Math.max(1, dist(rEyeTop, rEyeBot));
+  const avgEyeW = (lEyeW + rEyeW) / 2;
+  const avgEyeH = (lEyeH + rEyeH) / 2;
+
+  const eyeOpenness = avgEyeH / avgEyeW; // 0-1 range roughly
+  const eyeSize = avgEyeW / jawW;
+
+  // Eye shape
+  let eyeShape = 'almond';
+  if (eyeOpenness > 0.45) {
+    eyeShape = 'round';
+  } else if (eyeOpenness < 0.22) {
+    eyeShape = 'narrow';
+  }
+
+  // Eye angle: inner vs outer corner y-difference
+  const lEyeAngle = lEyeInner.y - lEyeOuter.y; // positive = outer higher (upswept)
+  const rEyeAngle = rEyeInner.y - rEyeOuter.y;
+  const eyeAngle = (lEyeAngle + rEyeAngle) / 2;
+
+  // Nose measurements
+  const noseRoot = P(6);
+  const noseTip = P(1);
+  const noseLeft = P(48);
+  const noseRight = P(278);
+  const noseBridgeMid = P(5);
+  const noseLength = Math.max(1, dist(noseRoot, noseTip));
+  const noseWidth = Math.max(1, dist(noseLeft, noseRight));
+  const noseWidthRatio = noseWidth / jawW;
+  const noseLengthRatio = noseLength / faceH;
+
+  // Nose bridge curve: deviation of midpoint from straight line root->tip
+  const midX = (noseRoot.x + noseTip.x) / 2;
+  const midY_ = (noseRoot.y + noseTip.y) / 2;
+  const noseBridgeDev = (noseBridgeMid.x - midX); // positive = hook nose
+  const noseBridgeCurve = noseBridgeDev / noseLength;
+
+  // Mouth measurements
+  const mouthLeft = P(61);
+  const mouthRight = P(291);
+  const upperLipCenter = P(0);
+  const lowerLipCenter = P(17);
+  const upperLipTop = P(37);
+  const lowerLipBot = P(84);
+
+  const mouthWidth = Math.max(1, dist(mouthLeft, mouthRight));
+  const mouthWidthRatio = mouthWidth / jawW;
+  const mouthOpennessDist = Math.max(0, lowerLipBot.y - upperLipTop.y);
+  const mouthOpennessRatio = mouthOpennessDist / faceH;
+
+  // Mouth curve: smile detection
+  const mouthCenterY = (mouthLeft.y + mouthRight.y) / 2;
+  const mouthCenterTopY = upperLipCenter.y;
+  const mouthCurve = (mouthCenterY - mouthCenterTopY);
+  const isSmiling = mouthCurve > jawW * 0.015;
+
+  // Mouth fullness: lip thickness relative to face
+  const lipThickness = Math.max(1, dist(upperLipTop, lowerLipBot));
+  const mouthFullness = lipThickness / faceH;
+
+  // Eyebrow measurements
+  const lBrowInner = P(107), lBrowMid = P(66), lBrowOuter = P(70);
+  const rBrowInner = P(336), rBrowMid = P(296), rBrowOuter = P(300);
+  const lBrowTop = P(105), rBrowTop = P(334);
+
+  const lBrowH = Math.max(1, midY(lBrowInner, lBrowMid) - lBrowTop.y);
+  const rBrowH = Math.max(1, midY(rBrowInner, rBrowMid) - rBrowTop.y);
+  const eyebrowThickness = ((lBrowH + rBrowH) / 2) / faceH;
+
+  // Eyebrow arch
+  const lArch = (lBrowMid.y - lBrowInner.y) / dist(lBrowInner, lBrowMid);
+  const rArch = (rBrowMid.y - rBrowInner.y) / dist(rBrowInner, rBrowMid);
+  const eyebrowArch = (lArch + rArch) / 2;
+
+  // Hairline analysis
+  const hairlineLeft = [67, 68, 69, 103, 104, 105].map(i => P(i));
+  const hairlineRight = [297, 298, 299, 336, 337, 338].map(i => P(i));
+  const hairlineCenter = P(10);
+
+  const leftHairlineY = (hairlineLeft[0].y + hairlineLeft[1].y) / 2;
+  const rightHairlineY = (hairlineRight[0].y + hairlineRight[1].y) / 2;
+  const sideHairlineAvgY = (leftHairlineY + rightHairlineY) / 2;
+  const centerHairlineY = hairlineCenter.y;
+  const highThreshold = faceH * 0.12;
+
+  let hairlineType = 'normal';
+  if (foreheadHeight > highThreshold * 1.2 && centerHairlineY > sideHairlineAvgY - faceH * 0.01) {
+    hairlineType = 'high';
+  } else if (centerHairlineY < sideHairlineAvgY - faceH * 0.03) {
+    hairlineType = 'widowsPeak';
+  } else if (Math.abs(leftHairlineY - rightHairlineY) < faceH * 0.01 &&
+             (hairlineLeft[2].y < sideHairlineAvgY - faceH * 0.015 ||
+              hairlineRight[2].y < sideHairlineAvgY - faceH * 0.015)) {
+    hairlineType = 'mShaped';
+  } else if (foreheadHeight < highThreshold * 0.8) {
+    hairlineType = 'low';
+  }
+
+  // Dominant feature: which feature is most prominent relative to norms
+  const eyeProminence = eyeSize / 0.28;
+  const noseProminence = (noseWidthRatio / 0.22 + noseLengthRatio / 0.45) / 2;
+  const mouthProminence = mouthWidthRatio / 0.38;
+
+  let dominantFeature = 'eyes';
+  if (noseProminence > eyeProminence && noseProminence > mouthProminence) {
+    dominantFeature = 'nose';
+  } else if (mouthProminence > eyeProminence && mouthProminence > noseProminence) {
+    dominantFeature = 'mouth';
+  }
+
+  return {
+    faceType, faceH, jawWidth: jawW, faceCx, faceCy,
+    foreheadHeight, foreheadHeightRatio: foreheadHeight / faceH,
+    chinShape, chin,
+    eyeOpenness, eyeShape, eyeAngle, eyeSize,
+    lEyeInner, lEyeOuter, lEyeTop, lEyeBot, lEyeW, lEyeH,
+    rEyeInner, rEyeOuter, rEyeTop, rEyeBot, rEyeW, rEyeH,
+    noseWidth, noseWidthRatio, noseLength, noseLengthRatio,
+    noseBridgeCurve, noseRoot, noseTip, noseLeft, noseRight, noseBridgeMid,
+    mouthWidth, mouthWidthRatio, mouthOpenness: mouthOpennessRatio,
+    mouthCurve, isSmiling, mouthFullness,
+    mouthLeft, mouthRight, upperLipCenter, lowerLipCenter, upperLipTop, lowerLipBot,
+    eyebrowThickness, eyebrowArch,
+    hairlineType, foreheadHeightAbs: foreheadHeight,
+    dominantFeature,
+    hairlineLeft, hairlineRight, hairlineCenter,
+    browY,
+    leftJaw, rightJaw,
+    cheekboneW
+  };
+}
+
+
+// computeStableFeatures — analyze 30-60 frames to find stable characteristics
+// Ignores transient changes (blinking, micro-expressions, lighting noise)
+function computeStableFeatures(frames) {
+  if (frames.length < 10) return null;
+
+  const toNorm = (lm, idx) => ({ x: lm[idx].x, y: lm[idx].y });
+
+  // Collect measurements across all frames
+  const faceRatios = [];
+  const eyeSizes = [];
+  const eyeDistances = [];
+  const noseLengths = [];
+  const noseWidths = [];
+  const mouthFullnesses = [];
+  const mouthWidths = [];
+  const browAngles = [];
+  const chinDepths = [];
+  const jawWidths = [];
+
+  for (const frame of frames) {
+    const lm = frame.landmarks;
+    const faceH = Math.hypot(toNorm(lm, 10).x - toNorm(lm, 152).x, toNorm(lm, 10).y - toNorm(lm, 152).y);
+    const faceW = Math.hypot(toNorm(lm, 234).x - toNorm(lm, 454).x, toNorm(lm, 234).y - toNorm(lm, 454).y);
+    faceRatios.push(faceH / Math.max(faceW, 0.001));
+
+    const eyeL = Math.hypot(toNorm(lm, 33).x - toNorm(lm, 133).x, toNorm(lm, 33).y - toNorm(lm, 133).y);
+    const eyeR = Math.hypot(toNorm(lm, 263).x - toNorm(lm, 362).x, toNorm(lm, 263).y - toNorm(lm, 362).y);
+    eyeSizes.push((eyeL + eyeR) / 2 / faceW);
+
+    const eyeDist = Math.hypot(toNorm(lm, 33).x - toNorm(lm, 263).x, toNorm(lm, 33).y - toNorm(lm, 263).y);
+    eyeDistances.push(eyeDist / faceW);
+
+    const noseLen = Math.hypot(toNorm(lm, 168).x - toNorm(lm, 2).x, toNorm(lm, 168).y - toNorm(lm, 2).y);
+    noseLengths.push(noseLen / faceH);
+
+    const noseW = Math.hypot(toNorm(lm, 98).x - toNorm(lm, 327).x, toNorm(lm, 98).y - toNorm(lm, 327).y);
+    noseWidths.push(noseW / faceW);
+
+    const mouthH = Math.hypot(toNorm(lm, 0).x - toNorm(lm, 17).x, toNorm(lm, 0).y - toNorm(lm, 17).y);
+    mouthFullnesses.push(mouthH / faceH);
+
+    const mouthW = Math.hypot(toNorm(lm, 61).x - toNorm(lm, 291).x, toNorm(lm, 61).y - toNorm(lm, 291).y);
+    mouthWidths.push(mouthW / faceW);
+
+    const browLAngle = Math.atan2(toNorm(lm, 107).y - toNorm(lm, 70).y, toNorm(lm, 107).x - toNorm(lm, 70).x);
+    const browRAngle = Math.atan2(toNorm(lm, 336).y - toNorm(lm, 300).y, toNorm(lm, 336).x - toNorm(lm, 300).x);
+    browAngles.push((browLAngle + browRAngle) / 2);
+
+    const chinD = toNorm(lm, 152).y - (toNorm(lm, 172).y + toNorm(lm, 397).y) / 2;
+    chinDepths.push(chinD / faceH);
+
+    jawWidths.push(faceW / faceH);
+  }
+
+  // Helper: median with outlier rejection (remove top/bottom 10%)
+  function robustMedian(arr) {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const start = Math.floor(sorted.length * 0.1);
+    const end = Math.ceil(sorted.length * 0.9);
+    const trimmed = sorted.slice(start, end);
+    const mid = Math.floor(trimmed.length / 2);
+    return trimmed.length % 2 === 0
+      ? (trimmed[mid - 1] + trimmed[mid]) / 2
+      : trimmed[mid];
+  }
+
+  // Compute stable (median) values
+  const stable = {
+    faceRatio: robustMedian(faceRatios),
+    eyeSize: robustMedian(eyeSizes),
+    eyeDistance: robustMedian(eyeDistances),
+    noseLength: robustMedian(noseLengths),
+    noseWidth: robustMedian(noseWidths),
+    mouthFullness: robustMedian(mouthFullnesses),
+    mouthWidth: robustMedian(mouthWidths),
+    browAngle: robustMedian(browAngles),
+    chinDepth: robustMedian(chinDepths),
+    jawWidthRatio: robustMedian(jawWidths)
+  };
+
+  // Also compute variance to identify stable vs unstable features
+  function variance(arr, median) {
+    const deviations = arr.map(v => Math.abs(v - median));
+    return robustMedian(deviations);
+  }
+
+  stable.eyeSizeVar = variance(eyeSizes, stable.eyeSize);
+  stable.mouthFullnessVar = variance(mouthFullnesses, stable.mouthFullness);
+  stable.noseWidthVar = variance(noseWidths, stable.noseWidth);
+
+  return stable;
+}
+// ============================================================
+// detectHairEdge — Pixel-based hair edge detection from image source
+// Uses horizontal + vertical scan lines to find dark hair pixel
+// boundaries. Returns { left, right, top } arrays of points in
+// main canvas coordinates, or null if detection fails.
+// ============================================================
+function detectHairEdge(imageSource, landmarks, bounds) {
+  const sw = 320, sh = 240;
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = sw; offCanvas.height = sh;
+  const offCtx = offCanvas.getContext('2d');
+  offCtx.save();
+  offCtx.scale(-1, 1);
+  offCtx.drawImage(imageSource, -sw, 0, sw, sh);
+  offCtx.restore();
+  const imageData = offCtx.getImageData(0, 0, sw, sh);
+  const pixels = imageData.data;
+
+  function lmToOff(p) { return { x: (1 - p.x) * sw, y: p.y * sh }; }
+
+  // Sample skin color from forehead landmarks
+  let skinBrightness = 0, skinCount = 0;
+  for (const lmIdx of [10, 151, 9, 8, 168, 6, 197, 195, 5]) {
+    const sp = lmToOff(landmarks[lmIdx]);
+    const sx = Math.round(sp.x), sy = Math.round(sp.y);
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dy = -3; dy <= 3; dy++) {
+        const px = sx + dx, py = sy + dy;
+        if (px >= 0 && px < sw && py >= 0 && py < sh) {
+          const idx = (py * sw + px) * 4;
+          skinBrightness += (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+          skinCount++;
+        }
+      }
+    }
+  }
+  skinBrightness = skinCount > 0 ? skinBrightness / skinCount : 128;
+  const hairThreshold = skinBrightness * 0.72;
+  const bgThreshold = skinBrightness * 1.15;
+
+  // Strategy: Start from each face contour point, scan OUTWARD along the normal
+  // to find hair->background transition. This covers top, sides, temples.
+  const faceContourIds = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  const facePoints = faceContourIds.map(i => lmToOff(landmarks[i]));
+  const numFace = facePoints.length;
+
+  // Face center for angle check (to skip chin area)
+  const fCxF = (facePoints[10].x + facePoints[20].x) / 2;
+  const fCyF = (facePoints[0].y + facePoints[18].y) / 2;
+
+  const hairEdgeResults = []; // { point, faceIndex }
+
+  for (let i = 0; i < numFace; i++) {
+    const prev = facePoints[(i - 1 + numFace) % numFace];
+    const curr = facePoints[i];
+    const next = facePoints[(i + 1) % numFace];
+
+    // Tangent and outward normal
+    const tx = next.x - prev.x;
+    const ty = next.y - prev.y;
+    const tLen = Math.max(0.001, Math.hypot(tx, ty));
+    let nx = ty / tLen;
+    let ny = -tx / tLen;
+
+    // Ensure normal points OUTWARD (away from face center)
+    // If normal points inward, flip it
+    const toCenterX = fCxF - curr.x;
+    const toCenterY = fCyF - curr.y;
+    if (nx * toCenterX + ny * toCenterY > 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    // Skip chin/jaw area
+    const angleFromCenter = Math.atan2(curr.y - fCyF, curr.x - fCxF);
+    if (angleFromCenter > Math.PI * 0.18) continue;
+
+    // Scan outward
+    const maxDist = 90;
+    let foundEdge = null;
+    let enteredHair = false;
+
+    for (let d = 3; d < maxDist; d += 1.0) {
+      const px = Math.round(curr.x + nx * d);
+      const py = Math.round(curr.y + ny * d);
+      if (px < 0 || px >= sw || py < 0 || py >= sh) break;
+
+      const idx = (py * sw + px) * 4;
+      const brightness = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+
+      if (!enteredHair) {
+        if (brightness < hairThreshold) enteredHair = true;
+      } else {
+        if (brightness > bgThreshold) {
+          foundEdge = { x: px, y: py };
+          break;
+        }
+      }
+    }
+
+    if (foundEdge) {
+      hairEdgeResults.push({ point: foundEdge, faceIndex: i });
+    } else if (enteredHair) {
+      hairEdgeResults.push({
+        point: { x: Math.round(curr.x + nx * (maxDist - 5)), y: Math.round(curr.y + ny * (maxDist - 5)) },
+        faceIndex: i
+      });
+    }
+  }
+
+  if (hairEdgeResults.length < 6) return null;
+
+  // Sort by face contour index
+  hairEdgeResults.sort((a, b) => a.faceIndex - b.faceIndex);
+
+  // Smooth with moving average
+  const pts = hairEdgeResults.map(h => h.point);
+  const smoothed = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0 || i === pts.length - 1) { smoothed.push(pts[i]); continue; }
+    smoothed.push({
+      x: (pts[i-1].x + pts[i].x + pts[i+1].x) / 3,
+      y: (pts[i-1].y + pts[i].y + pts[i+1].y) / 3
+    });
+  }
+
+  // Map to main canvas
+  const toMain = (p) => ({
+    x: (p.x / sw - bounds.cx) * bounds.scale + canvas.width / 2,
+    y: (p.y / sh - bounds.cy) * bounds.scale + canvas.height * 0.49
+  });
+
+  const allPts = smoothed.map(toMain);
+
+  // Split by face contour index ranges:
+  // 0-9 = top (forehead/crown), 10-18 = right side, 19-35 = left side
+  const topHair = [];
+  const rightHair = [];
+  const leftHair = [];
+  for (let j = 0; j < hairEdgeResults.length; j++) {
+    const fi = hairEdgeResults[j].faceIndex;
+    const pt = allPts[j];
+    if (fi <= 9) topHair.push(pt);
+    else if (fi <= 18) rightHair.push(pt);
+    else leftHair.push(pt);
+  }
+
+  return { left: leftHair, right: rightHair, top: topHair, all: allPts, indices: hairEdgeResults.map(h => h.faceIndex) };
+}
+
+// Convert landmarks to canvas points using center-fit bounds
+function point(lm, index, bounds, mirror) {
+  const p = lm[index];
+  const x = mirror ? 1 - p.x : p.x;
+  return {
+    x: (x - bounds.cx) * bounds.scale + canvas.width / 2,
+    y: (p.y - bounds.cy) * bounds.scale + canvas.height * 0.49,
+  };
+}
+
+function boundsFor(lm, mirror) {
+  const ovalIdx = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  const xs = ovalIdx.map(i => (mirror ? 1 - lm[i].x : lm[i].x));
+  const ys = ovalIdx.map(i => lm[i].y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const faceH = maxY - minY;
+  // Extend top boundary upward to reserve space for hair (35% of face height)
+  const hairMinY = minY - faceH * 0.35;
+  const totalH = maxY - hairMinY;
+  return {
+    cx: (minX + maxX) / 2,
+    cy: hairMinY + totalH * 0.52, // shift center down slightly to accommodate hair above
+    scale: Math.min(canvas.width * 0.7 / (maxX - minX), canvas.height * 0.72 / totalH),
+  };
+}
+
+function sample(lm, ids, bounds, abstract, seed, keep, closed) {
+  const pts = ids.map(id => point(lm, id, bounds, true));
+  // Only simplify if keep is specified and less than total points
+  if (keep && keep < pts.length) {
+    return stylize(simplify(pts, keep), abstract, seed, closed);
+  }
+  // Keep ALL points, only add tiny hand-drawn wobble (max ~2px)
+  return stylize(pts, abstract * 0.05, seed, closed);
+}
+
+function sampleRaw(lm, ids, bounds, closed) {
+  return ids.map(id => point(lm, id, bounds, true));
+}
+
+function drawMatissePortrait(landmarks, imageSource) {
+  const w = canvas.width, h = canvas.height;
+  const bounds = boundsFor(landmarks, true);
+
+  // ===== Visual Memory: collect frames =====
+  visualMemory.frameCount++;
+  if (visualMemory.frames.length < visualMemory.maxFrames) {
+    visualMemory.frames.push({
+      landmarks: JSON.parse(JSON.stringify(landmarks)),
+      bounds: { cx: bounds.cx, cy: bounds.cy, scale: bounds.scale },
+      timestamp: performance.now()
+    });
+    // During collection, show a subtle "observing" indicator or just wait
+    if (visualMemory.frames.length < 3) {
+      drawPaper();
+      artPlaceholder.classList.add('hidden');
+      return;
+    }
+  }
+
+  // Compute stable features from collected frames
+  if (!visualMemory.stableFeatures && visualMemory.frames.length >= visualMemory.maxFrames) {
+    visualMemory.stableFeatures = computeStableFeatures(visualMemory.frames);
+    visualMemory.enabled = true;
+  }
+
+  // Use stable features if available, otherwise use current frame
+  const stableFeatures = visualMemory.stableFeatures;
+
+  // Paper background
+  drawPaper();
+
+  // Base parameters — ink is the master stroke width
+  // Hair uses ~1.4x ink (boldest), face oval ~0.6x, features ~0.3-0.4x
+  const ink = Math.max(10, Math.min(28, bounds.scale * 1.5));
+  const rough = 0.40;
+  const abstract = 0.50;
+  // Seed: lock once a face is detected so strokes don't jump.
+  // The visual variation comes from real face movement, not random seed changes.
+  if (state.seed === 0 || state.seed === undefined) {
+    state.seed = Math.floor(performance.now() / 1000);
+  }
+
+  // Analyze individual features to drive dynamic drawing parameters
+  const toCanvasPt = (idx) => point(landmarks, idx, bounds, true);
+  let features = analyzeFeatures(landmarks, toCanvasPt, bounds.scale);
+
+  // Blend stable features into analysis for consistent exaggeration
+  if (stableFeatures) {
+    features.eyeSize = stableFeatures.eyeSize;
+    features.noseWidthRatio = stableFeatures.noseWidth;
+    features.noseLengthRatio = stableFeatures.noseLength;
+    features.mouthFullness = stableFeatures.mouthFullness;
+    features.mouthWidthRatio = stableFeatures.mouthWidth;
+    features.eyebrowArch = stableFeatures.browAngle;
+    features.chinDepth = stableFeatures.chinDepth;
+    features.jawWidth = features.faceH * stableFeatures.jawWidthRatio;
+  }
+
+  // Dynamic parameters based on actual face features
+  let faceRough = rough;
+  let faceAbstract = abstract * 0.25;
+  let faceKeepL = 15, faceKeepR = 14;
+  let faceWidthL = ink * 0.6, faceWidthR = ink * 0.45;
+
+  let eyeDrawMode = 'blob'; // 'blob' = soft fill, 'stroke' = outline
+  let eyeWidth = ink * 0.6;
+  let eyeKeep = 12;
+  let eyeYScale = 1.0; // vertical compression for narrow eyes
+
+  let noseWidth = ink * 0.30;
+  let noseKeep = 4;
+  let noseBridgeBend = false;
+
+  let lipUpperWidth = ink * 0.38;
+  let lipLowerWidth = ink * 0.40;
+  let lipUpperKeep = 9;
+  let lipLowerKeep = 8;
+  let lipSmileLift = 0; // upward curve for smile
+
+  let browWidth = ink * 0.35;
+  let browKeep = 6;
+  let browRough = rough;
+
+  // Apply feature-driven adjustments
+  if (features.faceType === 'round') {
+    faceRough *= 0.4; faceAbstract *= 0.15; faceKeepL = 17; faceKeepR = 17;
+    faceWidthL = ink * 0.75; faceWidthR = ink * 0.6;
+  } else if (features.faceType === 'square') {
+    faceRough *= 1.5; faceAbstract *= 0.5; faceKeepL = 10; faceKeepR = 9;
+    faceWidthL = ink * 0.7; faceWidthR = ink * 0.55;
+  } else if (features.faceType === 'long') {
+    faceRough *= 0.6; faceAbstract *= 0.2; faceKeepL = 16; faceKeepR = 15;
+  } else if (features.faceType === 'diamond') {
+    faceRough *= 0.7; faceAbstract *= 0.2; faceKeepL = 16; faceKeepR = 15;
+  }
+
+  if (features.chinShape === 'pointed') {
+    faceWidthR = Math.max(faceWidthR, ink * 0.35);
+  } else if (features.chinShape === 'flat') {
+    faceWidthR = Math.min(faceWidthR, ink * 0.35);
+  }
+
+  if (features.eyeShape === 'round') {
+    eyeWidth = ink * 0.78; eyeYScale = 1.15; eyeKeep = 14;
+  } else if (features.eyeShape === 'narrow') {
+    eyeWidth = ink * 0.42; eyeYScale = 0.65; eyeKeep = 10; eyeDrawMode = 'stroke';
+  } else {
+    eyeWidth = ink * 0.6; eyeKeep = 12;
+  }
+  if (features.eyeSize > 0.32) {
+    eyeWidth *= 1.25;
+  } else if (features.eyeSize < 0.22) {
+    eyeWidth *= 0.75;
+  }
+
+  if (features.noseLengthRatio > 0.52) {
+    noseWidth = ink * 0.42; noseKeep = 6;
+  } else if (features.noseLengthRatio < 0.38) {
+    noseWidth = ink * 0.22; noseKeep = 3;
+  }
+  if (Math.abs(features.noseBridgeCurve) > 0.08) {
+    noseBridgeBend = true;
+  }
+
+  if (features.mouthFullness > 0.07) {
+    lipUpperWidth = ink * 0.52; lipLowerWidth = ink * 0.55;
+  } else if (features.mouthFullness < 0.04) {
+    lipUpperWidth = ink * 0.26; lipLowerWidth = ink * 0.28;
+  }
+  if (features.isSmiling) {
+    lipSmileLift = features.faceH * 0.012;
+  }
+
+  if (features.eyebrowThickness > 0.04) {
+    browWidth = ink * 0.5;
+  } else if (features.eyebrowThickness < 0.02) {
+    browWidth = ink * 0.22;
+  }
+  if (features.eyebrowArch > 0.25) {
+    browRough *= 1.3;
+  } else if (features.eyebrowArch < 0.08) {
+    browRough *= 0.5;
+  }
+
+  // Dominant feature gets extra emphasis
+  if (features.dominantFeature === 'eyes') {
+    eyeWidth *= 1.2;
+  } else if (features.dominantFeature === 'nose') {
+    noseWidth *= 1.3;
+  } else if (features.dominantFeature === 'mouth') {
+    lipUpperWidth *= 1.2; lipLowerWidth *= 1.2;
+  }
+
+  // ===== Feature Ranking: with normalization coefficients =====
+  // Eyes are small but highly distinctive → coefficient > 1
+  // Mouth is naturally large → coefficient < 1
+  const jawW = features.jawWidth;
+  const faceRatio = features.faceH / Math.max(jawW, 0.001);
+  const eyeDist = Math.hypot(toCanvasPt(33).x - toCanvasPt(263).x, toCanvasPt(33).y - toCanvasPt(263).y);
+  const eyeDistanceRatio = eyeDist / jawW;
+  const chinDepthVal = toCanvasPt(152).y - (toCanvasPt(172).y + toCanvasPt(397).y) / 2;
+
+  // Normalized deviation from average (with per-feature coefficients)
+  const featureScores = [
+    { name: 'faceShape',  value: Math.abs(faceRatio - 1.35),       avg: 0.35, coef: 1.0,  label: '脸型' },
+    { name: 'eyeSize',    value: Math.abs(features.eyeSize - 0.27), avg: 0.08, coef: 1.5,  label: '眼睛' },
+    { name: 'eyeDistance',value: Math.abs(eyeDistanceRatio - 0.18), avg: 0.06, coef: 1.2,  label: '眼距' },
+    { name: 'noseLength', value: Math.abs(features.noseLengthRatio - 0.44), avg: 0.10, coef: 0.9,  label: '鼻长' },
+    { name: 'noseWidth',  value: Math.abs(features.noseWidthRatio - 0.25),  avg: 0.08, coef: 1.0,  label: '鼻宽' },
+    { name: 'mouthFull',  value: Math.abs(features.mouthFullness - 0.055), avg: 0.025,coef: 0.8,  label: '嘴唇厚度' },
+    { name: 'mouthWidth', value: Math.abs(features.mouthWidthRatio - 0.28),  avg: 0.08, coef: 0.9,  label: '嘴宽' },
+    { name: 'browArch',   value: Math.abs(features.eyebrowArch - 0.15),     avg: 0.10, coef: 0.7,  label: '眉毛' },
+    { name: 'chinShape',  value: Math.abs(chinDepthVal) / features.faceH,  avg: 0.08, coef: 0.8,  label: '下巴' },
+  ];
+
+  // Compute normalized score: (|deviation| / typical_deviation) * coefficient
+  for (const f of featureScores) {
+    f.score = (f.value / f.avg) * f.coef;
+  }
+
+  // Sort descending
+  featureScores.sort((a, b) => b.score - a.score);
+
+  // Top 1 feature for exaggeration
+  const topFeature = featureScores[0];
+  console.log(`[${currentStyle.label}] Top feature: ${topFeature.label} (score=${topFeature.score.toFixed(2)})`);
+
+  // Simple exaggeration: only top feature gets exaggerated
+  const exaggerate = currentStyle.exaggerate;
+  const topScale = Math.min(1.8, 1 + (topFeature.score - 1) * 0.3);
+
+  // Quick helpers for drawing sections
+  const isEyeTop = topFeature.name === 'eyeSize' || topFeature.name === 'eyeDistance';
+  const isNoseTop = topFeature.name === 'noseLength' || topFeature.name === 'noseWidth';
+  const isMouthTop = topFeature.name === 'mouthFull' || topFeature.name === 'mouthWidth';
+  const isBrowTop = topFeature.name === 'browArch';
+  const isFaceTop = topFeature.name === 'faceShape';
+
+  // Key landmark index groups
+  const faceOvalIdx = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  const leftEyeIdx = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
+  const rightEyeIdx = [263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249];
+  const leftBrowIdx = [70, 63, 105, 66, 107, 55, 65, 52];
+  const rightBrowIdx = [300, 293, 334, 296, 336, 285, 295, 282];
+  const upperLipIdx = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
+  const lowerLipIdx = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291];
+  const noseBridgeIdx = [168, 6, 197, 195, 5, 4];
+  // noseBaseIdx intentionally omitted — nostrils always deleted
+
+  // =============================================
+  // 1. FACE OVAL — contour follows actual face shape
+  // =============================================
+  const leftFaceIdx = faceOvalIdx.slice(0, 17);
+  const rightFaceIdx = faceOvalIdx.slice(16);
+
+  const leftFace = stylize(sampleRaw(landmarks, leftFaceIdx, bounds), faceAbstract * 0.05, state.seed + 20);
+  const rightFace = stylize(sampleRaw(landmarks, rightFaceIdx, bounds), faceAbstract * 0.05, state.seed + 21);
+
+  if (currentStyle.name === 'picasso') {
+    // Picasso: asymmetric, only one side
+    const drawLeft = rand(state.seed + 200) > 0.5;
+    if (drawLeft) {
+      drawBrushPath(leftFace, { width: faceWidthL * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 20, varyWidth: currentStyle.lineVary });
+    } else {
+      drawBrushPath(rightFace, { width: faceWidthR * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 21, varyWidth: currentStyle.lineVary });
+    }
+  } else if (currentStyle.name === 'minimal') {
+    // Minimal: very few points for face
+    const fewLeft = simplify(leftFace, 5);
+    const fewRight = simplify(rightFace, 5);
+    drawBrushPath(fewLeft, { width: faceWidthL * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 20, varyWidth: false });
+    drawBrushPath(fewRight, { width: faceWidthR * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 21, varyWidth: false });
+  } else {
+    // Normal: both sides
+    drawBrushPath(leftFace, { width: faceWidthL * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 20, varyWidth: currentStyle.lineVary });
+    drawBrushPath(rightFace, { width: faceWidthR * currentStyle.faceWidthMul, rough: currentStyle.rough, seed: state.seed + 21, varyWidth: currentStyle.lineVary });
+  }
+
+  // =============================================
+  // 2. HAIR — style-dependent
+  // =============================================
+  if (currentStyle.hairDetail !== 'none') {
+    // Clip hair to outside face oval
+    const faceOvalPts = faceOvalIdx.map(i => point(landmarks, i, bounds, true));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.moveTo(faceOvalPts[0].x, faceOvalPts[0].y);
+    for (let i = 1; i < faceOvalPts.length; i++) {
+      ctx.lineTo(faceOvalPts[i].x, faceOvalPts[i].y);
+    }
+    ctx.closePath();
+    ctx.clip('evenodd');
+
+    // Detect hair edges
+    let rawHair = null;
+    if (imageSource) {
+      hairEdgeFrameCount++;
+      if (hairEdgeFrameCount % 5 === 0) {
+        rawHair = detectHairEdge(imageSource, landmarks, bounds);
+      }
+    }
+    let hairData = rawHair || lastHairEdge;
+    if (rawHair) lastHairEdge = rawHair;
+
+    // Frame-to-frame smoothing: interpolate between old and new hair data
+    if (hairData) {
+      if (!smoothHairData || smoothHairData.all.length !== hairData.all.length) {
+        smoothHairData = JSON.parse(JSON.stringify(hairData));
+      } else {
+        const s = HAIR_SMOOTH;
+        for (let k = 0; k < hairData.all.length && k < smoothHairData.all.length; k++) {
+          smoothHairData.all[k].x += (hairData.all[k].x - smoothHairData.all[k].x) * s;
+          smoothHairData.all[k].y += (hairData.all[k].y - smoothHairData.all[k].y) * s;
+        }
+        // Re-split top/left/right using saved indices
+        const idxs = smoothHairData.indices || [];
+        smoothHairData.top = [];
+        smoothHairData.left = [];
+        smoothHairData.right = [];
+        for (let k = 0; k < idxs.length && k < smoothHairData.all.length; k++) {
+          if (idxs[k] <= 9) smoothHairData.top.push(smoothHairData.all[k]);
+          else if (idxs[k] <= 18) smoothHairData.right.push(smoothHairData.all[k]);
+          else smoothHairData.left.push(smoothHairData.all[k]);
+        }
+      }
+      hairData = smoothHairData;
+    }
+
+    if (hairData && hairData.top.length >= 3) {
+      // Top crown arc — always drawn when hair is present
+      const topStroke = simplify(hairData.top, Math.min(10, hairData.top.length));
+      drawContourLine(stylize(topStroke, abstract * 0.4, state.seed + 31),
+        { width: ink * 0.65, seed: state.seed + 31 });
+
+      if (currentStyle.hairDetail === 'full') {
+        // Left side
+        if (hairData.left.length >= 3) {
+          const leftStroke = simplify(hairData.left, Math.min(8, hairData.left.length));
+          drawContourLine(stylize(leftStroke, abstract * 0.35, state.seed + 41),
+            { width: ink * 0.55, seed: state.seed + 41, alpha: 0.85 });
+        }
+        // Right side
+        if (hairData.right.length >= 3) {
+          const rightStroke = simplify(hairData.right, Math.min(8, hairData.right.length));
+          drawContourLine(stylize(rightStroke, abstract * 0.35, state.seed + 44),
+            { width: ink * 0.55, seed: state.seed + 44, alpha: 0.85 });
+        }
+      }
+    } else {
+      // Fallback: geometric inference
+      const faceTopPt = point(landmarks, 10, bounds, true);
+      const faceBotPt = point(landmarks, 152, bounds, true);
+      const faceH2 = faceBotPt.y - faceTopPt.y;
+
+      const hairlineIdx = [54, 103, 67, 109, 10, 338, 297, 332, 284];
+      const leftHairIdx = [127, 162, 21, 54, 103, 67];
+      const rightHairIdx = [332, 284, 251, 389, 356, 454];
+
+      const hairTop = sample(landmarks, hairlineIdx, bounds, abstract, state.seed + 31, 7);
+      hairTop.forEach((p, i) => {
+        p.y -= faceH2 * 0.35 + rand(i + state.seed) * faceH2 * 0.15;
+        p.x += (rand(i + 33) - 0.5) * faceH2 * 0.12 * abstract;
+      });
+      drawContourLine(hairTop, { width: ink * 0.65, seed: state.seed + 31 });
+
+      if (currentStyle.hairDetail === 'full') {
+        const leftOuter = sample(landmarks, leftHairIdx, bounds, abstract, state.seed + 41, 5);
+        leftOuter.forEach((p, i) => {
+          p.y += faceH2 * 0.15 * i;
+          p.x -= faceH2 * 0.12 + rand(i + state.seed) * faceH2 * 0.05;
+        });
+        drawContourLine(leftOuter, { width: ink * 0.55, seed: state.seed + 41, alpha: 0.85 });
+
+        const rightOuter = sample(landmarks, rightHairIdx, bounds, abstract, state.seed + 44, 5);
+        rightOuter.forEach((p, i) => {
+          p.y += faceH2 * 0.15 * i;
+          p.x += faceH2 * 0.12 + rand(i + state.seed) * faceH2 * 0.05;
+        });
+        drawContourLine(rightOuter, { width: ink * 0.55, seed: state.seed + 44, alpha: 0.85 });
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // =============================================
+  // 3. EYEBROWS
+  // =============================================
+  if (currentStyle.browMode === 'minimal') {
+    const fewLeft = simplify(stylize(sampleRaw(landmarks, leftBrowIdx, bounds), abstract * 0.05, state.seed + 51), 4);
+    const fewRight = simplify(stylize(sampleRaw(landmarks, rightBrowIdx, bounds), abstract * 0.05, state.seed + 52), 4);
+    drawBrushPath(fewLeft, { width: browWidth, rough: currentStyle.rough, seed: state.seed + 51, varyWidth: currentStyle.lineVary });
+    drawBrushPath(fewRight, { width: browWidth, rough: currentStyle.rough, seed: state.seed + 52, varyWidth: currentStyle.lineVary });
+  } else {
+    const leftBrowPts = stylize(sampleRaw(landmarks, leftBrowIdx, bounds), abstract * 0.05, state.seed + 51);
+    const rightBrowPts = stylize(sampleRaw(landmarks, rightBrowIdx, bounds), abstract * 0.05, state.seed + 52);
+    drawBrushPath(leftBrowPts, { width: browWidth, rough: currentStyle.rough, seed: state.seed + 51, varyWidth: currentStyle.lineVary });
+    drawBrushPath(rightBrowPts, { width: browWidth, rough: currentStyle.rough, seed: state.seed + 52, varyWidth: currentStyle.lineVary });
+  }
+
+  // =============================================
+  // 4. EYES
+  // =============================================
+  let leftEyeRaw = stylize(sampleRaw(landmarks, leftEyeIdx, bounds, true), abstract * 0.05, state.seed + 61, true);
+  let rightEyeRaw = stylize(sampleRaw(landmarks, rightEyeIdx, bounds, true), abstract * 0.05, state.seed + 62, true);
+
+  // Apply vertical scaling for narrow/round eyes
+  if (eyeYScale !== 1.0) {
+    const leftCenterY = leftEyeRaw.reduce((s, p) => s + p.y, 0) / leftEyeRaw.length;
+    leftEyeRaw = leftEyeRaw.map(p => ({ x: p.x, y: leftCenterY + (p.y - leftCenterY) * eyeYScale }));
+    const rightCenterY = rightEyeRaw.reduce((s, p) => s + p.y, 0) / rightEyeRaw.length;
+    rightEyeRaw = rightEyeRaw.map(p => ({ x: p.x, y: rightCenterY + (p.y - rightCenterY) * eyeYScale }));
+  }
+
+  // Exaggeration based on top feature
+  if (topFeature.name === 'eyeSize') {
+    const eyeCenterL = { x: leftEyeRaw.reduce((s,p)=>s+p.x,0)/leftEyeRaw.length, y: leftEyeRaw.reduce((s,p)=>s+p.y,0)/leftEyeRaw.length };
+    const eyeCenterR = { x: rightEyeRaw.reduce((s,p)=>s+p.x,0)/rightEyeRaw.length, y: rightEyeRaw.reduce((s,p)=>s+p.y,0)/rightEyeRaw.length };
+    leftEyeRaw = exaggerateFeature(leftEyeRaw, eyeCenterL, topScale * exaggerate);
+    rightEyeRaw = exaggerateFeature(rightEyeRaw, eyeCenterR, topScale * exaggerate);
+  }
+
+  // Style-specific eye drawing
+  switch (currentStyle.eyeMode) {
+    case 'polygon':
+      drawPolygon(leftEyeRaw, { width: eyeWidth, seed: state.seed + 61, closed: true });
+      drawPolygon(rightEyeRaw, { width: eyeWidth, seed: state.seed + 62, closed: true });
+      break;
+    case 'irregular':
+      drawIrregularBlob(leftEyeRaw, { width: eyeWidth, seed: state.seed + 61 });
+      drawIrregularBlob(rightEyeRaw, { width: eyeWidth, seed: state.seed + 62 });
+      break;
+    case 'blob':
+      drawBlobShape(leftEyeRaw, eyeWidth, state.seed + 61);
+      drawBlobShape(rightEyeRaw, eyeWidth, state.seed + 62);
+      break;
+    case 'outline':
+      drawBrushPath(leftEyeRaw, { width: eyeWidth * 0.7, rough: currentStyle.rough, seed: state.seed + 61, closed: true, varyWidth: currentStyle.lineVary });
+      drawBrushPath(rightEyeRaw, { width: eyeWidth * 0.7, rough: currentStyle.rough, seed: state.seed + 62, closed: true, varyWidth: currentStyle.lineVary });
+      break;
+    case 'dot':
+      drawDots(leftEyeRaw, { width: eyeWidth, seed: state.seed + 61 });
+      drawDots(rightEyeRaw, { width: eyeWidth, seed: state.seed + 62 });
+      break;
+  }
+
+  // =============================================
+  // 5. NOSE
+  // =============================================
+  let noseBridge = stylize(sampleRaw(landmarks, noseBridgeIdx, bounds), abstract * 0.05, state.seed + 71);
+  const noseCenter = { x: (point(landmarks, 168, bounds, true).x + point(landmarks, 2, bounds, true).x) / 2, y: (point(landmarks, 168, bounds, true).y + point(landmarks, 2, bounds, true).y) / 2 };
+
+  if (topFeature.name === 'noseLength' || topFeature.name === 'noseWidth') {
+    noseBridge = exaggerateFeature(noseBridge, noseCenter, topScale);
+  }
+
+  switch (currentStyle.noseMode) {
+    case 'curve':
+      drawBrushPath(noseBridge, { width: noseWidth, rough: currentStyle.rough, seed: state.seed + 71, varyWidth: currentStyle.lineVary });
+      break;
+    case 'zigzag':
+      drawZigzag(noseBridge, { width: noseWidth, seed: state.seed + 71 });
+      break;
+    case 'realistic':
+      drawRealisticNose(landmarks, bounds, { width: noseWidth, seed: state.seed + 71 });
+      break;
+    case 'minimal':
+      const fewNose = simplify(noseBridge, 3);
+      drawBrushPath(fewNose, { width: noseWidth * 0.8, rough: currentStyle.rough, seed: state.seed + 71, varyWidth: false });
+      break;
+    case 'brackets':
+      drawBrackets(noseBridge, { width: noseWidth, seed: state.seed + 71 });
+      break;
+  }
+
+  // =============================================
+  // 6. MOUTH
+  // =============================================
+  let upperLip = stylize(sampleRaw(landmarks, upperLipIdx, bounds), abstract * 0.05, state.seed + 81);
+  let lowerLip = stylize(sampleRaw(landmarks, lowerLipIdx, bounds), abstract * 0.05, state.seed + 82);
+
+  if (lipSmileLift > 0) {
+    upperLip[0].y -= lipSmileLift;
+    upperLip[upperLip.length - 1].y -= lipSmileLift;
+    lowerLip[0].y -= lipSmileLift;
+    lowerLip[lowerLip.length - 1].y -= lipSmileLift;
+  }
+
+  const mouthCenter = { x: (upperLip[0].x + upperLip[upperLip.length - 1].x) / 2, y: (upperLip.reduce((s,p)=>s+p.y,0)/upperLip.length + lowerLip.reduce((s,p)=>s+p.y,0)/lowerLip.length) / 2 };
+  if (topFeature.name === 'mouthFull' || topFeature.name === 'mouthWidth') {
+    upperLip = exaggerateFeature(upperLip, mouthCenter, topScale);
+    lowerLip = exaggerateFeature(lowerLip, mouthCenter, topScale);
+  }
+
+  switch (currentStyle.mouthMode) {
+    case 'single-line':
+      // One line through middle of lips
+      const midPts = upperLip.map((p, i) => ({ x: (p.x + (lowerLip[i] || p).x) / 2, y: (p.y + (lowerLip[i] || p).y) / 2 }));
+      drawBrushPath(midPts, { width: lipUpperWidth, rough: currentStyle.rough, seed: state.seed + 81, varyWidth: currentStyle.lineVary });
+      break;
+    case 'zigzag':
+      drawMouthZigzag(upperLip, lowerLip, { width: lipUpperWidth, seed: state.seed + 81 });
+      break;
+    case 'realistic':
+      drawMouthRealistic(upperLip, lowerLip, { width: lipUpperWidth, seed: state.seed + 81 });
+      break;
+    case 'arc':
+      drawMouthArc(upperLip, { width: lipUpperWidth, seed: state.seed + 81 });
+      break;
+    case 'symbol':
+      drawMouthSymbol(upperLip, { width: lipUpperWidth, seed: state.seed + 81 });
+      break;
+  }
+
+  // =============================================
+  // 7. NECK / SHOULDERS
+  // =============================================
+  if (currentStyle.neck) {
+    // (neck drawing reserved for future expansion)
+  }
+
+  // Hide placeholder
+  artPlaceholder.classList.add('hidden');
+}
+// ============================================================
+// MediaPipe Face Mesh setup
+// ============================================================
+const faceMesh = new FaceMesh({ locateFile: (file) => {
+  return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+}});
+
+faceMesh.setOptions({
+  maxNumFaces: 1,
+  refineLandmarks: true,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+faceMesh.onResults((results) => {
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    lastLandmarks = results.multiFaceLandmarks[0];
+    const source = isUploadMode ? uploadPreview : video;
+    drawMatissePortrait(lastLandmarks, source);
+    artPlaceholder.classList.add('hidden');
+    btnSnap.disabled = false;
+  }
+});
+
+// ============================================================
+// Camera mode
+// ============================================================
+btnStart.addEventListener('click', async () => {
+  try {
+    // Re-randomize style each time camera is opened
+    currentStyle = DRAWING_STYLES[Math.floor(Math.random() * DRAWING_STYLES.length)];
+    // Reset visual memory for new session
+    visualMemory.frames = [];
+    visualMemory.stableFeatures = null;
+    visualMemory.enabled = false;
+    visualMemory.frameCount = 0;
+    lastHairEdge = null;
+    smoothHairData = null;
+    hairEdgeFrameCount = 0;
+    state.seed = 0;
+    console.log('[Style]', currentStyle.label);
+
+    stopUploadMode();
+    camPlaceholder.textContent = '正在启动摄像头...';
+    video.classList.remove('hidden');
+    uploadPreview.classList.add('hidden');
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    camPlaceholder.classList.add('hidden');
+    camDot.classList.add('active');
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    btnUpload.disabled = true;
+    isRunning = true;
+    isUploadMode = false;
+
+    const processFrame = async () => {
+      if (!isRunning) return;
+      await faceMesh.send({ image: video });
+      requestAnimationFrame(processFrame);
+    };
+    processFrame();
+
+  } catch (err) {
+    console.error(err);
+    camPlaceholder.textContent = '无法访问摄像头，请检查权限设置';
+    camPlaceholder.classList.remove('hidden');
+    video.classList.add('hidden');
+  }
+});
+
+btnStop.addEventListener('click', () => {
+  isRunning = false;
+  state.seed = 0; // reset seed so next session gets a fresh one
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  video.classList.add('hidden');
+  uploadPreview.classList.add('hidden');
+  camPlaceholder.textContent = '已停止';
+  camPlaceholder.classList.remove('hidden');
+  camDot.classList.remove('active');
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  btnUpload.disabled = false;
+});
+
+function stopUploadMode() {
+  isUploadMode = false;
+  uploadPreview.src = '';
+  uploadPreview.classList.add('hidden');
+}
+
+// ============================================================
+// Upload image mode
+// ============================================================
+btnUpload.addEventListener('click', () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Stop camera if running
+  isRunning = false;
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  video.classList.add('hidden');
+
+  // Show preview
+  const url = URL.createObjectURL(file);
+  uploadPreview.src = url;
+  uploadPreview.classList.remove('hidden');
+  camPlaceholder.classList.add('hidden');
+
+  btnStart.disabled = false;
+  btnStop.disabled = false;
+  btnUpload.disabled = false;
+  isUploadMode = true;
+  camDot.classList.add('active');
+
+  // Wait for image to load then process
+  uploadPreview.onload = async () => {
+    await faceMesh.send({ image: uploadPreview });
+  };
+  // In case already cached
+  if (uploadPreview.complete) {
+    await faceMesh.send({ image: uploadPreview });
+  }
+});
+
+// ============================================================
+// Snap & Clear
+// ============================================================
+btnSnap.addEventListener('click', () => {
+  const link = document.createElement('a');
+  link.download = `matisse-portrait-${Date.now()}.png`;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+btnClear.addEventListener('click', () => {
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  artPlaceholder.classList.remove('hidden');
+  btnSnap.disabled = true;
+});
+
+// Initial blank canvas
+ctx.fillStyle = '#f5f0e8';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+</script>
+
+</body>
+</html>
